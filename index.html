@@ -1,0 +1,1628 @@
+import React, { useState, useEffect, useRef, useMemo } from "react";
+import {
+  Building2, LayoutGrid, FilePlus2, FileText, Upload, Plus, ChevronRight,
+  ChevronLeft, X, Download, Printer, Copy, Pencil, Check, Sparkles, Loader2,
+  Search, Settings, Trash2, FolderOpen, MapPin, Calendar, Coins, Layers,
+  ClipboardList, ScrollText, ReceiptText, FileSignature, BookOpen, ArrowRight,
+  CheckCircle2, Clock, AlertCircle, Image as ImageIcon, Hammer, Menu, Compass,
+  Ruler, FileSpreadsheet, Eye, RefreshCw, MoreHorizontal,
+} from "lucide-react";
+
+/* ============================================================================
+   OUVRAGE STUDIO — SaaS BET Architecture & Génie Civil
+   Production documentaire automatisée (CCTP, CCAP, DQE, BPU, AE, Décompte...)
+   ========================================================================== */
+
+const FIRM = "BET Équateur Ingénierie";
+
+const DOC_TYPES = [
+  { key: "cctp", name: "CCTP", full: "Cahier des Clauses Techniques Particulières", Icon: ScrollText, fam: "Technique" },
+  { key: "ccap", name: "CCAP", full: "Cahier des Clauses Administratives Particulières", Icon: FileText, fam: "Administratif" },
+  { key: "dqe", name: "DQE", full: "Détail Quantitatif & Estimatif", Icon: FileSpreadsheet, fam: "Financier" },
+  { key: "bpu", name: "BPU", full: "Bordereau des Prix Unitaires", Icon: ReceiptText, fam: "Financier" },
+  { key: "ae", name: "Acte d'Engagement", full: "Acte d'Engagement (AE)", Icon: FileSignature, fam: "Administratif" },
+  { key: "decompte", name: "Décompte de démarrage", full: "Décompte N°1 — Avance de démarrage", Icon: Coins, fam: "Financier" },
+  { key: "planning", name: "Planning d'exécution", full: "Planning prévisionnel d'exécution", Icon: Calendar, fam: "Technique" },
+  { key: "memoire", name: "Mémoire technique", full: "Mémoire technique & méthodologie", Icon: BookOpen, fam: "Technique" },
+];
+const DOC_MAP = Object.fromEntries(DOC_TYPES.map((d) => [d.key, d]));
+
+const OUVRAGE_TYPES = [
+  "Bâtiment scolaire", "Bâtiment administratif", "Bâtiment hospitalier",
+  "Logements / Habitat", "Voirie et réseaux divers (VRD)", "Ouvrage d'art (pont)",
+  "Adduction d'eau potable", "Bâtiment commercial", "Équipement sportif", "Autre",
+];
+
+/* ----------------------------- Utilitaires -------------------------------- */
+
+const nf = new Intl.NumberFormat("fr-FR");
+const fmt = (n, cur = "FCFA") => nf.format(Math.round(Number(n) || 0)) + " " + cur;
+const compact = (n) => {
+  n = Number(n) || 0;
+  if (n >= 1e9) return (n / 1e9).toFixed(2).replace(".", ",") + " Md";
+  if (n >= 1e6) return (n / 1e6).toFixed(0) + " M";
+  if (n >= 1e3) return (n / 1e3).toFixed(0) + " k";
+  return String(n);
+};
+
+function calc(p) {
+  const ht = Number(p.montant) || 0;
+  const tva = Number(p.tva) || 0;
+  const tvaAmt = (ht * tva) / 100;
+  const ttc = ht + tvaAmt;
+  const avancePct = 20;
+  const avance = (ht * avancePct) / 100;
+  const tvaAvance = (avance * tva) / 100;
+  const avanceTTC = avance + tvaAvance;
+  const retenue = (ht * 5) / 100;
+  const caution = (ht * 5) / 100;
+  return { ht, tva, tvaAmt, ttc, avancePct, avance, tvaAvance, avanceTTC, retenue, caution };
+}
+
+/* Conversion nombre -> lettres (français) */
+const U = ["zéro","un","deux","trois","quatre","cinq","six","sept","huit","neuf","dix","onze","douze","treize","quatorze","quinze","seize","dix-sept","dix-huit","dix-neuf"];
+const T = ["","","vingt","trente","quarante","cinquante","soixante","soixante","quatre-vingt","quatre-vingt"];
+function below100(n) {
+  if (n < 20) return U[n];
+  const t = Math.floor(n / 10), u = n % 10;
+  if (t === 7 || t === 9) {
+    const rem = n - (t === 7 ? 60 : 80);
+    if (t === 7) return rem === 11 ? "soixante et onze" : "soixante-" + U[rem];
+    return "quatre-vingt-" + U[rem];
+  }
+  let w = T[t];
+  if (u === 0) return t === 8 ? "quatre-vingts" : w;
+  if (u === 1 && t !== 8) return w + " et un";
+  return w + "-" + U[u];
+}
+function below1000(n) {
+  if (n < 100) return below100(n);
+  const c = Math.floor(n / 100), r = n % 100;
+  let cent = c === 1 ? "cent" : U[c] + " cent";
+  if (r === 0) return c > 1 ? cent + "s" : cent;
+  return cent + " " + below100(r);
+}
+function enLettres(n) {
+  n = Math.round(Number(n) || 0);
+  if (n === 0) return "zéro";
+  const md = Math.floor(n / 1e9); n %= 1e9;
+  const mi = Math.floor(n / 1e6); n %= 1e6;
+  const mille = Math.floor(n / 1e3); n %= 1e3;
+  const r = n, parts = [];
+  if (md) parts.push(below1000(md) + (md > 1 ? " milliards" : " milliard"));
+  if (mi) parts.push(below1000(mi) + (mi > 1 ? " millions" : " million"));
+  if (mille) parts.push(mille === 1 ? "mille" : below1000(mille) + " mille");
+  if (r) parts.push(below1000(r));
+  const s = parts.join(" ");
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+const CUR_WORDS = { FCFA: "francs CFA", "€": "euros", EUR: "euros" };
+
+/* ----------------------- Modèles de documents (repli) --------------------- */
+
+function tplHeader(title, p) {
+  return `# ${title}
+
+**Projet :** ${p.name}
+**Maître d'ouvrage :** ${p.mo || "—"}
+**Maître d'œuvre :** ${p.moe || FIRM}
+**Localisation :** ${p.loc || "—"}
+**Type d'ouvrage :** ${p.type || "—"}
+
+---
+`;
+}
+
+function tplCCTP(p) {
+  return tplHeader("CAHIER DES CLAUSES TECHNIQUES PARTICULIÈRES (CCTP)", p) + `
+## ARTICLE 1 — OBJET DU MARCHÉ
+Le présent Cahier des Clauses Techniques Particulières définit les spécifications techniques relatives aux travaux de **${(p.type||"l'ouvrage").toLowerCase()}** dans le cadre du projet « ${p.name} », situé à ${p.loc||"—"}, pour le compte de ${p.mo||"l'Administration"}.
+
+## ARTICLE 2 — CONSISTANCE DES TRAVAUX
+Les travaux comprennent l'ensemble des prestations nécessaires à la réalisation complète et fonctionnelle de l'ouvrage :
+- Installation et repli de chantier, amenée du matériel ;
+- Implantation, terrassements généraux et fouilles ;
+- Fondations et infrastructures en béton armé ;
+- Élévations, structure et gros œuvre ;
+- Second œuvre (menuiseries, revêtements, peinture) ;
+- Lots techniques (plomberie sanitaire, électricité, climatisation) ;
+- Voirie et réseaux divers (VRD), assainissement et aménagements extérieurs.
+
+## ARTICLE 3 — DOCUMENTS TECHNIQUES DE RÉFÉRENCE
+L'entrepreneur est réputé connaître et respecter les normes et règlements en vigueur :
+- Documents Techniques Unifiés (DTU) applicables à chaque corps d'état ;
+- Règles de calcul BAEL 91 / Eurocodes 2 pour le béton armé ;
+- Normes NF, EN et ISO relatives aux matériaux et à la mise en œuvre ;
+- Règlements parasismiques et de sécurité incendie le cas échéant.
+
+## ARTICLE 4 — PRESCRIPTIONS PAR CORPS D'ÉTAT
+### 4.1 Terrassement et fondations
+Les fouilles seront exécutées jusqu'au bon sol. Les fondations seront dimensionnées selon le rapport géotechnique. Béton de propreté dosé à 150 kg/m³.
+
+### 4.2 Gros œuvre — Béton armé
+Béton structurel dosé à 350 kg/m³ de ciment CEM I 42,5. Aciers HA Fe E400. Coffrages soignés, parements ordinaires non vus et soignés pour les parties vues.
+
+### 4.3 Maçonnerie et cloisonnement
+Maçonnerie en agglomérés de ciment creux de 15 et 20 cm, hourdés au mortier dosé à 400 kg/m³.
+
+### 4.4 Charpente et couverture
+Charpente conforme aux DTU bois/métal selon le projet ; couverture étanche avec dispositifs d'évacuation des eaux pluviales.
+
+### 4.5 Plomberie sanitaire
+Réseaux en PVC pression et PER ; appareils sanitaires de premier choix ; conformité aux règles d'hygiène.
+
+### 4.6 Électricité — courants forts et faibles
+Installation conforme à la norme NF C 15-100 ; tableau divisionnaire, mise à la terre et protection différentielle.
+
+### 4.7 Revêtements et finitions
+Carrelage grès cérame, enduits, peinture acrylique en 2 couches sur impression.
+
+## ARTICLE 5 — CONTRÔLES ET ESSAIS
+- Essais de compression du béton (éprouvettes à 7 et 28 jours) ;
+- Essais d'étanchéité des réseaux d'eau et d'assainissement ;
+- Contrôle de conformité des installations électriques (mesures d'isolement).
+
+## ARTICLE 6 — RÉCEPTION DES TRAVAUX
+La réception est prononcée par le maître d'ouvrage, sur proposition du maître d'œuvre, après exécution des essais et levée des réserves éventuelles, conformément au CCAP.`;
+}
+
+function tplCCAP(p) {
+  const c = calc(p);
+  return tplHeader("CAHIER DES CLAUSES ADMINISTRATIVES PARTICULIÈRES (CCAP)", p) + `
+## ARTICLE 1 — OBJET ET ÉTENDUE
+Le présent CCAP fixe les dispositions administratives applicables au marché de travaux relatif au projet « ${p.name} » à ${p.loc||"—"}.
+
+## ARTICLE 2 — PIÈCES CONSTITUTIVES DU MARCHÉ
+Par ordre de priorité décroissante :
+1. L'Acte d'Engagement (AE) ;
+2. Le présent Cahier des Clauses Administratives Particulières (CCAP) ;
+3. Le Cahier des Clauses Techniques Particulières (CCTP) ;
+4. Le Détail Quantitatif et Estimatif (DQE) et le Bordereau des Prix Unitaires (BPU) ;
+5. Les plans et pièces graphiques du projet.
+
+## ARTICLE 3 — PRIX ET MODE D'ÉVALUATION
+Le marché est conclu à prix unitaires. Montant prévisionnel :
+
+| Désignation | Montant (${p.currency}) |
+|---|---|
+| Montant des travaux HT | ${fmt(c.ht, p.currency)} |
+| TVA (${c.tva} %) | ${fmt(c.tvaAmt, p.currency)} |
+| **Montant TTC** | **${fmt(c.ttc, p.currency)}** |
+
+Les prix sont réputés fermes et non révisables, sauf stipulation contraire.
+
+## ARTICLE 4 — MODALITÉS DE RÈGLEMENT
+- **Avance de démarrage :** ${c.avancePct} % du montant HT, soit ${fmt(c.avance, p.currency)}, versée après constitution d'une caution de restitution d'avance d'égal montant.
+- **Acomptes :** mensuels, sur la base des situations de travaux contradictoirement établies.
+- **Délai de paiement :** 60 jours à compter de la réception de la situation.
+
+## ARTICLE 5 — DÉLAI D'EXÉCUTION
+Le délai global d'exécution est fixé à **${p.delai||"—"} mois**, à compter de la date de notification de l'ordre de service de démarrage.
+
+## ARTICLE 6 — PÉNALITÉS DE RETARD
+En cas de retard, il sera appliqué une pénalité de **1/1000ᵉ du montant du marché par jour calendaire de retard**, plafonnée à 10 % du montant du marché.
+
+## ARTICLE 7 — RETENUE DE GARANTIE
+Une retenue de garantie de **5 %** (soit ${fmt(c.retenue, p.currency)}) est prélevée sur chaque acompte ; elle est libérée à l'issue du délai de garantie de parfait achèvement (12 mois).
+
+## ARTICLE 8 — CAUTIONNEMENT ET GARANTIES
+- Cautionnement définitif : 5 % du montant du marché, soit ${fmt(c.caution, p.currency)} ;
+- Garantie de parfait achèvement : 12 mois après réception.
+
+## ARTICLE 9 — ASSURANCES
+L'entrepreneur justifie d'une assurance de responsabilité civile et d'une garantie décennale couvrant les ouvrages.
+
+## ARTICLE 10 — RÉSILIATION
+Le marché peut être résilié pour faute, abandon de chantier ou force majeure, dans les conditions de la réglementation des marchés publics applicable.
+
+## ARTICLE 11 — RÈGLEMENT DES DIFFÉRENDS
+Les litiges sont réglés à l'amiable ; à défaut, ils relèvent des juridictions compétentes du lieu d'exécution.`;
+}
+
+function dqeLots(p) {
+  return [
+    { code: "01", name: "INSTALLATION & TRAVAUX PRÉPARATOIRES", share: 0.07,
+      lines: [["Installation et repli de chantier", "ens", 1, 0.6], ["Implantation, piquetage et nivellement", "ens", 1, 0.4]] },
+    { code: "02", name: "TERRASSEMENTS & FONDATIONS", share: 0.16,
+      lines: [["Déblais en terrain ordinaire", "m³", 1200, 0.35], ["Béton de propreté dosé à 150 kg/m³", "m³", 60, 0.2], ["Béton armé pour semelles et longrines", "m³", 180, 0.45]] },
+    { code: "03", name: "GROS ŒUVRE — BÉTON ARMÉ", share: 0.30,
+      lines: [["Béton armé pour poteaux et chaînages", "m³", 220, 0.4], ["Béton armé pour planchers et poutres", "m³", 260, 0.45], ["Aciers HA Fe E400 façonnés", "kg", 28000, 0.15]] },
+    { code: "04", name: "MAÇONNERIE & CLOISONS", share: 0.10,
+      lines: [["Maçonnerie en agglos creux de 20 cm", "m²", 1400, 0.6], ["Cloisons en agglos de 15 cm", "m²", 900, 0.4]] },
+    { code: "05", name: "MENUISERIES & COUVERTURE", share: 0.12,
+      lines: [["Couverture et charpente", "m²", 850, 0.45], ["Menuiseries métalliques / aluminium", "ens", 1, 0.35], ["Menuiseries bois (portes)", "U", 40, 0.2]] },
+    { code: "06", name: "LOTS TECHNIQUES (PLOMBERIE & ÉLECTRICITÉ)", share: 0.13,
+      lines: [["Plomberie sanitaire et alimentation", "ens", 1, 0.45], ["Installation électrique (NF C 15-100)", "ens", 1, 0.55]] },
+    { code: "07", name: "REVÊTEMENTS, PEINTURE & VRD", share: 0.12,
+      lines: [["Carrelage grès cérame et faïence", "m²", 1100, 0.4], ["Peinture acrylique 2 couches", "m²", 2600, 0.3], ["VRD, assainissement et aménagements", "ens", 1, 0.3]] },
+  ];
+}
+
+function tplDQE(p) {
+  const c = calc(p), cur = p.currency;
+  const lots = dqeLots(p);
+  let body = "", recap = [], grand = 0;
+  lots.forEach((lot) => {
+    const lotAmt = c.ht * lot.share;
+    let sub = 0;
+    let rows = lot.lines.map((ln, i) => {
+      const [des, u, qte, w] = ln;
+      const target = lotAmt * w;
+      const pu = Math.max(1, Math.round(target / qte));
+      const mt = pu * qte;
+      sub += mt;
+      return `| ${lot.code}.${i + 1} | ${des} | ${u} | ${nf.format(qte)} | ${nf.format(pu)} | ${nf.format(mt)} |`;
+    }).join("\n");
+    grand += sub;
+    recap.push(`| LOT ${lot.code} | ${lot.name} | ${nf.format(sub)} |`);
+    body += `\n### LOT ${lot.code} — ${lot.name}\n\n| N° | Désignation | U | Qté | P.U. (${cur}) | Montant (${cur}) |\n|---|---|---|---|---|---|\n${rows}\n\n**Sous-total Lot ${lot.code} : ${fmt(sub, cur)}**\n`;
+  });
+  const tva = (grand * c.tva) / 100;
+  return tplHeader("DÉTAIL QUANTITATIF ET ESTIMATIF (DQE)", p) +
+    body +
+    `\n## RÉCAPITULATIF GÉNÉRAL\n\n| Lot | Désignation | Montant (${cur}) |\n|---|---|---|\n${recap.join("\n")}\n| | **TOTAL HT** | **${nf.format(grand)}** |\n| | TVA (${c.tva} %) | ${nf.format(tva)} |\n| | **TOTAL TTC** | **${nf.format(grand + tva)}** |\n\n*Estimation établie par ${p.moe || FIRM}. Les quantités sont issues du métré et restent soumises au constat contradictoire.*`;
+}
+
+function tplBPU(p) {
+  const cur = p.currency, c = calc(p);
+  const lots = dqeLots(p);
+  let body = "";
+  lots.forEach((lot) => {
+    const lotAmt = c.ht * lot.share;
+    let rows = lot.lines.map((ln, i) => {
+      const [des, u, qte, w] = ln;
+      const pu = Math.max(1, Math.round((lotAmt * w) / qte));
+      return `| ${lot.code}.${i + 1} | ${des} | ${u} | ${nf.format(pu)} |`;
+    }).join("\n");
+    body += `\n### LOT ${lot.code} — ${lot.name}\n\n| N° | Désignation | U | P.U. HT (${cur}) |\n|---|---|---|---|\n${rows}\n`;
+  });
+  return tplHeader("BORDEREAU DES PRIX UNITAIRES (BPU)", p) +
+    `Le présent bordereau fixe les prix unitaires hors taxes applicables à chaque nature d'ouvrage. Ces prix comprennent la fourniture, le transport, la main-d'œuvre, la mise en œuvre et toutes sujétions.\n` + body +
+    `\n*Tout prix non prévu fera l'objet d'un prix nouveau établi contradictoirement.*`;
+}
+
+function tplAE(p) {
+  const c = calc(p);
+  const words = CUR_WORDS[p.currency] || "francs CFA";
+  return tplHeader("ACTE D'ENGAGEMENT", p) + `
+## A — IDENTIFICATION DU POUVOIR ADJUDICATEUR
+${p.mo || "L'Administration contractante"}, ci-après dénommé « le Maître d'ouvrage ».
+
+## B — OBJET DU MARCHÉ
+Travaux de ${(p.type||"construction").toLowerCase()} relatifs au projet « ${p.name} », situé à ${p.loc||"—"}.
+
+## C — ENGAGEMENT DU CANDIDAT
+Je soussigné(e), agissant au nom et pour le compte de l'entreprise soumissionnaire, après avoir pris pleinement connaissance des pièces du marché (CCAP, CCTP, DQE, BPU et plans), m'engage à exécuter les travaux conformément à ces documents pour les montants suivants :
+
+| Désignation | Montant (${p.currency}) |
+|---|---|
+| Montant des travaux HT | ${fmt(c.ht, p.currency)} |
+| TVA (${c.tva} %) | ${fmt(c.tvaAmt, p.currency)} |
+| **Montant TTC** | **${fmt(c.ttc, p.currency)}** |
+
+Arrêté le montant du présent engagement à la somme de :
+**${enLettres(c.ttc)} ${words}** toutes taxes comprises.
+
+Délai d'exécution proposé : **${p.delai||"—"} mois** à compter de l'ordre de service de démarrage.
+
+## D — PAIEMENTS
+Le Maître d'ouvrage se libérera des sommes dues par virement au compte bancaire indiqué par le titulaire.
+
+## E — ENGAGEMENT & ACCEPTATION
+
+| Le Candidat (signature) | Acceptation du Maître d'ouvrage |
+|---|---|
+| Fait à ………………, le …/…/…… | Fait à ………………, le …/…/…… |
+| Nom & qualité : | Nom & qualité : |
+| Cachet et signature : | Cachet et signature : |`;
+}
+
+function tplDecompte(p) {
+  const c = calc(p);
+  const words = CUR_WORDS[p.currency] || "francs CFA";
+  return tplHeader("DÉCOMPTE N°1 — AVANCE DE DÉMARRAGE", p) + `
+## RAPPEL DU MARCHÉ
+- **Objet :** ${p.name}
+- **Montant du marché HT :** ${fmt(c.ht, p.currency)}
+- **Montant du marché TTC :** ${fmt(c.ttc, p.currency)}
+- **Délai d'exécution :** ${p.delai||"—"} mois
+
+## CALCUL DE L'AVANCE DE DÉMARRAGE
+
+| Désignation | Montant (${p.currency}) |
+|---|---|
+| Montant du marché HT | ${fmt(c.ht, p.currency)} |
+| Taux de l'avance de démarrage | ${c.avancePct} % |
+| Montant de l'avance HT | ${fmt(c.avance, p.currency)} |
+| TVA (${c.tva} %) sur avance | ${fmt(c.tvaAvance, p.currency)} |
+| **Montant de l'avance TTC à mandater** | **${fmt(c.avanceTTC, p.currency)}** |
+
+## CONDITIONS DE VERSEMENT
+- L'avance est versée après constitution d'une **caution bancaire de restitution d'avance** d'un montant égal à l'avance HT.
+- Elle sera **remboursée par précompte** sur les acomptes, dès que le montant des prestations exécutées atteint 30 % du marché, et intégralement remboursée à 80 % d'exécution.
+
+Arrêté le présent décompte à la somme de :
+**${enLettres(c.avanceTTC)} ${words}** toutes taxes comprises.
+
+| Le Maître d'œuvre | Le Maître d'ouvrage |
+|---|---|
+| ${p.moe || FIRM} | ${p.mo || "—"} |
+| Date & signature : | Date & signature : |`;
+}
+
+function tplPlanning(p) {
+  const d = Math.max(1, Number(p.delai) || 8);
+  const phases = [
+    ["Installation de chantier & études d'exécution", Math.max(1, Math.round(d * 0.1))],
+    ["Terrassements & fondations", Math.max(1, Math.round(d * 0.15))],
+    ["Gros œuvre & élévations", Math.max(1, Math.round(d * 0.3))],
+    ["Second œuvre & menuiseries", Math.max(1, Math.round(d * 0.2))],
+    ["Lots techniques (plomberie, électricité)", Math.max(1, Math.round(d * 0.12))],
+    ["Revêtements, finitions & peinture", Math.max(1, Math.round(d * 0.1))],
+    ["VRD, essais & réception", Math.max(1, Math.round(d * 0.08))],
+  ];
+  let start = 1;
+  const rows = phases.map((ph, i) => {
+    const dur = ph[1];
+    const end = Math.min(d, start + dur - 1);
+    const bar = "▰".repeat(dur);
+    const r = `| ${i + 1} | ${ph[0]} | M${start} → M${end} | ${dur} | ${bar} |`;
+    start = end + 1;
+    return r;
+  }).join("\n");
+  return tplHeader("PLANNING PRÉVISIONNEL D'EXÉCUTION", p) + `
+Délai global contractuel : **${d} mois**. Le planning ci-dessous est donné à titre prévisionnel ; il sera affiné au démarrage par le titulaire et validé par le maître d'œuvre.
+
+| N° | Phase | Période | Durée (mois) | Avancement |
+|---|---|---|---|---|
+${rows}
+
+## JALONS CLÉS
+- **J0 :** Notification de l'ordre de service de démarrage ;
+- **Fin gros œuvre :** réunion de chantier de validation structure ;
+- **Réception provisoire :** à l'issue du mois M${d}, après essais et levée des réserves ;
+- **Réception définitive :** 12 mois après la réception provisoire.`;
+}
+
+function tplMemoire(p) {
+  return tplHeader("MÉMOIRE TECHNIQUE & MÉTHODOLOGIE", p) + `
+## 1 — COMPRÉHENSION DU PROJET
+Le projet « ${p.name} » consiste en la réalisation d'un ouvrage de type **${(p.type||"—").toLowerCase()}** à ${p.loc||"—"}. ${p.moe || FIRM} propose une organisation rigoureuse, garantissant qualité, délais et sécurité.
+
+## 2 — ORGANISATION DU CHANTIER
+- **Encadrement :** un conducteur de travaux, un chef de chantier et des chefs d'équipe par corps d'état ;
+- **Installation :** base-vie, aire de stockage sécurisée, signalisation et clôture de chantier ;
+- **Moyens matériels :** matériel de terrassement, bétonnières/centrale, coffrages métalliques, échafaudages.
+
+## 3 — MÉTHODOLOGIE D'EXÉCUTION
+1. Études d'exécution et plans de coffrage/ferraillage ;
+2. Terrassements et réalisation des fondations ;
+3. Élévation de la structure en béton armé par niveau ;
+4. Second œuvre et lots techniques en recouvrement partiel ;
+5. Finitions, essais et réception.
+
+## 4 — DÉMARCHE QUALITÉ
+Plan d'assurance qualité (PAQ), contrôle des matériaux à réception, essais béton (7 et 28 jours), fiches de contrôle par phase et levée systématique des non-conformités.
+
+## 5 — HYGIÈNE, SÉCURITÉ & ENVIRONNEMENT
+Plan de prévention, port des EPI obligatoire, gestion des déchets de chantier, limitation des nuisances (bruit, poussières) et protection des riverains.
+
+## 6 — DÉLAIS & ENGAGEMENT
+L'entreprise s'engage à respecter le délai global de **${p.delai||"—"} mois** et à tenir des réunions de chantier hebdomadaires avec le maître d'œuvre.`;
+}
+
+const TEMPLATES = {
+  cctp: tplCCTP, ccap: tplCCAP, dqe: tplDQE, bpu: tplBPU,
+  ae: tplAE, decompte: tplDecompte, planning: tplPlanning, memoire: tplMemoire,
+};
+
+/* --------------------------- Intégration IA ------------------------------- */
+
+function buildPrompt(key, p) {
+  const c = calc(p);
+  const ctx = `CONTEXTE DU PROJET
+- Intitulé : ${p.name}
+- Maître d'ouvrage : ${p.mo || "non précisé"}
+- Maître d'œuvre (BET) : ${p.moe || FIRM}
+- Localisation : ${p.loc || "non précisée"}
+- Type d'ouvrage : ${p.type || "non précisé"}
+- Montant estimé : ${fmt(c.ht, p.currency)} HT
+- Taux de TVA : ${c.tva} %
+- Délai d'exécution : ${p.delai || "non précisé"} mois
+
+TERMES DE RÉFÉRENCE / FICHE DU MARCHÉ :
+${p.tdr && p.tdr.trim() ? p.tdr.trim() : "(non fournis — utilise des hypothèses standard cohérentes pour ce type d'ouvrage en zone CEMAC)"}
+${p.plans && p.plans.length ? "\nDes plans architecturaux sont joints — analyse-les pour adapter les ouvrages, surfaces et lots." : ""}`;
+
+  const instr = {
+    cctp: "Rédige un CCTP (Cahier des Clauses Techniques Particulières) complet, structuré par articles et par corps d'état (terrassement, gros œuvre béton armé, maçonnerie, charpente/couverture, plomberie, électricité NF C 15-100, revêtements/finitions, VRD). Inclus objet, consistance, normes/DTU de référence, prescriptions techniques détaillées, contrôles & essais, et réception.",
+    ccap: "Rédige un CCAP (Cahier des Clauses Administratives Particulières) complet : objet, pièces constitutives, prix et mode d'évaluation (avec un tableau HT/TVA/TTC cohérent), modalités de règlement et avance de démarrage, délai, pénalités de retard, retenue de garantie 5 %, cautionnement, assurances (décennale), résiliation, règlement des différends.",
+    dqe: "Produis un DQE (Détail Quantitatif et Estimatif) sous forme de TABLEAUX MARKDOWN par lot. Colonnes : N° | Désignation | U | Qté | P.U. | Montant. Ajoute un sous-total par lot et un RÉCAPITULATIF final (Total HT, TVA, Total TTC). Le Total HT doit être cohérent avec le montant estimé du marché.",
+    bpu: "Produis un BPU (Bordereau des Prix Unitaires) sous forme de TABLEAUX MARKDOWN par lot. Colonnes : N° | Désignation | U | P.U. HT. Précise que les prix incluent fourniture, transport, main-d'œuvre et sujétions.",
+    ae: "Rédige un ACTE D'ENGAGEMENT : identification du pouvoir adjudicateur, objet, engagement du candidat avec tableau HT/TVA/TTC, le montant TTC EN TOUTES LETTRES, délai, modalités de paiement et blocs de signature (candidat / maître d'ouvrage).",
+    decompte: "Rédige un DÉCOMPTE N°1 d'AVANCE DE DÉMARRAGE : rappel du marché, tableau de calcul de l'avance (20 % du HT, TVA, total TTC), conditions de versement (caution de restitution d'avance, remboursement par précompte), montant arrêté EN TOUTES LETTRES, blocs de signature.",
+    planning: "Produis un PLANNING PRÉVISIONNEL D'EXÉCUTION sous forme de tableau (Phase | Période | Durée | Avancement) réparti sur le délai contractuel, avec barres d'avancement en caractères, plus une section Jalons clés. Le total des durées doit respecter le délai.",
+    memoire: "Rédige un MÉMOIRE TECHNIQUE & MÉTHODOLOGIE : compréhension du projet, organisation du chantier, méthodologie d'exécution par phases, démarche qualité (PAQ), hygiène/sécurité/environnement, délais et engagement.",
+  }[key];
+
+  return `${instr}\n\n${ctx}`;
+}
+
+const SYSTEM = `Tu es un ingénieur senior d'un Bureau d'Études Techniques (BET) spécialisé en architecture et génie civil, expert des marchés publics et privés en zone francophone (CEMAC). Tu produis des documents administratifs et techniques de chantier rigoureux, conformes aux normes (DTU, Eurocodes/BAEL, NF). Réponds UNIQUEMENT avec le contenu du document demandé, en français soutenu, au format Markdown propre (titres #/##/###, listes, et tableaux Markdown avec | lorsque pertinent). Aucun préambule, aucune note d'introduction, aucun commentaire hors document.`;
+
+function stripFences(t) {
+  return (t || "").replace(/^\s*```(?:markdown|md)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
+}
+
+async function callClaude(content) {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-20250514",
+      max_tokens: 1000,
+      system: SYSTEM,
+      messages: [{ role: "user", content }],
+    }),
+  });
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  const data = await res.json();
+  const text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+  if (!text.trim()) throw new Error("empty");
+  return stripFences(text);
+}
+
+/* ------------------------------- Markdown --------------------------------- */
+
+function Inline({ text }) {
+  const out = [];
+  const re = /\*\*(.+?)\*\*/g;
+  let last = 0, m, k = 0;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(<span key={k++}>{text.slice(last, m.index)}</span>);
+    out.push(<strong key={k++}>{m[1]}</strong>);
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) out.push(<span key={k++}>{text.slice(last)}</span>);
+  return <>{out}</>;
+}
+
+function Markdown({ text }) {
+  const blocks = useMemo(() => {
+    const lines = (text || "").replace(/\r/g, "").split("\n");
+    const out = [];
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      if (/^\s*$/.test(line)) { i++; continue; }
+      // table
+      if (line.includes("|") && i + 1 < lines.length && /-/.test(lines[i + 1]) && /^[\s:|\-]+$/.test(lines[i + 1])) {
+        const head = line; const rows = []; i += 2;
+        while (i < lines.length && lines[i].includes("|") && !/^\s*$/.test(lines[i])) { rows.push(lines[i]); i++; }
+        out.push({ t: "table", head, rows }); continue;
+      }
+      const h = line.match(/^(#{1,4})\s+(.*)$/);
+      if (h) { out.push({ t: "h", lvl: h[1].length, txt: h[2] }); i++; continue; }
+      if (/^\s*---+\s*$/.test(line)) { out.push({ t: "hr" }); i++; continue; }
+      if (/^\s*[-*]\s+/.test(line)) {
+        const items = [];
+        while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*[-*]\s+/, "")); i++; }
+        out.push({ t: "ul", items }); continue;
+      }
+      if (/^\s*\d+\.\s+/.test(line)) {
+        const items = [];
+        while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*\d+\.\s+/, "")); i++; }
+        out.push({ t: "ol", items }); continue;
+      }
+      const para = [line]; i++;
+      while (i < lines.length && !/^\s*$/.test(lines[i]) && !/^#{1,4}\s/.test(lines[i]) && !/^\s*[-*]\s+/.test(lines[i]) && !lines[i].includes("|") && !/^\s*\d+\.\s+/.test(lines[i])) { para.push(lines[i]); i++; }
+      out.push({ t: "p", txt: para.join(" ") });
+    }
+    return out;
+  }, [text]);
+
+  const cells = (row) => row.split("|").map((c) => c.trim()).filter((c, idx, arr) => !(c === "" && (idx === 0 || idx === arr.length - 1)));
+
+  return (
+    <div className="md">
+      {blocks.map((b, idx) => {
+        if (b.t === "h") { const Tag = "h" + Math.min(b.lvl + 1, 6); return <Tag key={idx} className={"md-h md-h" + b.lvl}><Inline text={b.txt} /></Tag>; }
+        if (b.t === "hr") return <hr key={idx} className="md-hr" />;
+        if (b.t === "p") return <p key={idx} className="md-p"><Inline text={b.txt} /></p>;
+        if (b.t === "ul") return <ul key={idx} className="md-ul">{b.items.map((it, j) => <li key={j}><Inline text={it} /></li>)}</ul>;
+        if (b.t === "ol") return <ol key={idx} className="md-ol">{b.items.map((it, j) => <li key={j}><Inline text={it} /></li>)}</ol>;
+        if (b.t === "table") {
+          const head = cells(b.head);
+          return (
+            <div key={idx} className="md-table-wrap">
+              <table className="md-table">
+                <thead><tr>{head.map((c, j) => <th key={j}><Inline text={c} /></th>)}</tr></thead>
+                <tbody>{b.rows.map((r, j) => { const cs = cells(r); return <tr key={j}>{cs.map((c, k) => <td key={k}><Inline text={c} /></td>)}</tr>; })}</tbody>
+              </table>
+            </div>
+          );
+        }
+        return null;
+      })}
+    </div>
+  );
+}
+
+/* ----------------------------- Données seed ------------------------------- */
+
+const seedBase = [
+  { id: "p1", name: "Construction d'un complexe scolaire R+2", mo: "Ministère de l'Éducation de Base", moe: FIRM, loc: "Yaoundé, Cameroun", type: "Bâtiment scolaire", montant: 485000000, tva: 19.25, delai: 10, currency: "FCFA", tdr: "Réalisation d'un complexe scolaire de 12 salles de classe sur trois niveaux (R+2), avec bloc administratif, bloc sanitaire, préau couvert et aménagement de la cour. Capacité 720 élèves. Structure en béton armé, couverture en bac alu.", plans: [], done: ["cctp", "ccap", "dqe"] },
+  { id: "p2", name: "Aménagement d'une voirie urbaine (3,5 km)", mo: "Communauté Urbaine de Douala", moe: FIRM, loc: "Douala, Cameroun", type: "Voirie et réseaux divers (VRD)", montant: 1250000000, tva: 19.25, delai: 14, currency: "FCFA", tdr: "Aménagement et bitumage de 3,5 km de voirie urbaine, comprenant terrassement, couche de fondation, couche de base, revêtement en béton bitumineux, caniveaux d'assainissement, trottoirs et éclairage public.", plans: [], done: ["cctp"] },
+  { id: "p3", name: "Construction d'un centre de santé intégré", mo: "Ministère de la Santé Publique", moe: FIRM, loc: "Libreville, Gabon", type: "Bâtiment hospitalier", montant: 320000000, tva: 18, delai: 8, currency: "FCFA", tdr: "Construction d'un centre de santé : salle de consultation, maternité, laboratoire, pharmacie et logement d'astreinte. Réseaux fluides médicaux et groupe électrogène de secours.", plans: [], done: [] },
+];
+
+function buildSeed() {
+  return seedBase.map((p) => {
+    const documents = {};
+    DOC_TYPES.forEach((d) => {
+      if (p.done.includes(d.key)) documents[d.key] = { status: "done", content: TEMPLATES[d.key](p), source: "template" };
+      else documents[d.key] = { status: "idle", content: "" };
+    });
+    const { done, ...rest } = p;
+    return { ...rest, documents, createdAt: Date.now() };
+  });
+}
+
+/* ================================ APP ===================================== */
+
+export default function App() {
+  const [projects, setProjects] = useState(buildSeed);
+  const [view, setView] = useState("dashboard"); // dashboard | projects | project
+  const [activeId, setActiveId] = useState(null);
+  const [navOpen, setNavOpen] = useState(false);
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [viewer, setViewer] = useState(null); // {projectId, key}
+  const [busy, setBusy] = useState(() => new Set()); // "pid:key"
+  const [toast, setToast] = useState(null);
+  const [query, setQuery] = useState("");
+
+  const active = projects.find((p) => p.id === activeId) || null;
+
+  const showToast = (msg, kind = "ok") => { setToast({ msg, kind }); };
+  useEffect(() => { if (toast) { const t = setTimeout(() => setToast(null), 2600); return () => clearTimeout(t); } }, [toast]);
+
+  const openProject = (id) => { setActiveId(id); setView("project"); setNavOpen(false); window.scrollTo(0, 0); };
+
+  const patchDoc = (pid, key, patch) => {
+    setProjects((prev) => prev.map((p) => p.id !== pid ? p : { ...p, documents: { ...p.documents, [key]: { ...p.documents[key], ...patch } } }));
+  };
+
+  const markBusy = (id, on) => setBusy((prev) => { const n = new Set(prev); on ? n.add(id) : n.delete(id); return n; });
+
+  async function generate(pid, keys) {
+    const proj = projects.find((p) => p.id === pid);
+    if (!proj) return;
+    for (const key of keys) {
+      const id = pid + ":" + key;
+      markBusy(id, true);
+      patchDoc(pid, key, { status: "generating" });
+      try {
+        const prompt = buildPrompt(key, proj);
+        let content = prompt;
+        const imgs = (proj.plans || []).filter((f) => f.dataUrl && f.type && f.type.startsWith("image/")).slice(0, 3);
+        if ((key === "cctp" || key === "memoire" || key === "dqe") && imgs.length) {
+          content = [
+            { type: "text", text: prompt },
+            ...imgs.map((f) => ({ type: "image", source: { type: "base64", media_type: f.type, data: f.dataUrl.split(",")[1] } })),
+          ];
+        }
+        const text = await callClaude(content);
+        patchDoc(pid, key, { status: "done", content: text, source: "ai" });
+      } catch (e) {
+        const text = TEMPLATES[key](proj);
+        patchDoc(pid, key, { status: "done", content: text, source: "template" });
+      }
+      markBusy(id, false);
+    }
+    showToast(keys.length > 1 ? "Documents générés ✓" : DOC_MAP[keys[0]].name + " généré ✓");
+  }
+
+  const createProject = (data, selectedKeys) => {
+    const id = "p" + Date.now();
+    const documents = {};
+    DOC_TYPES.forEach((d) => { documents[d.key] = { status: "idle", content: "" }; });
+    const proj = { id, ...data, documents, createdAt: Date.now() };
+    setProjects((prev) => [proj, ...prev]);
+    setWizardOpen(false);
+    setActiveId(id);
+    setView("project");
+    window.scrollTo(0, 0);
+    if (selectedKeys.length) setTimeout(() => generate(id, selectedKeys), 250);
+  };
+
+  const deleteProject = (id) => {
+    setProjects((prev) => prev.filter((p) => p.id !== id));
+    if (activeId === id) { setView("projects"); setActiveId(null); }
+  };
+
+  const stats = useMemo(() => {
+    const docs = projects.reduce((a, p) => a + Object.values(p.documents).filter((d) => d.status === "done").length, 0);
+    const sum = projects.reduce((a, p) => a + (Number(p.montant) || 0), 0);
+    const enCours = projects.filter((p) => Object.values(p.documents).some((d) => d.status === "done") && Object.values(p.documents).some((d) => d.status !== "done")).length;
+    return { projects: projects.length, docs, sum, enCours };
+  }, [projects]);
+
+  return (
+    <div className="app-root">
+      <StyleTag />
+
+      {/* Sidebar */}
+      <aside className={"sidebar" + (navOpen ? " open" : "") + (viewer ? " no-print" : "")}>
+        <div className="brand">
+          <LogoMark />
+          <div>
+            <div className="brand-name">OUVRAGE</div>
+            <div className="brand-sub mono">STUDIO · BET</div>
+          </div>
+        </div>
+
+        <button className="btn-new" onClick={() => { setWizardOpen(true); setNavOpen(false); }}>
+          <FilePlus2 size={17} /> Nouveau projet
+        </button>
+
+        <nav className="nav">
+          <NavItem icon={LayoutGrid} label="Tableau de bord" active={view === "dashboard"} onClick={() => { setView("dashboard"); setNavOpen(false); }} />
+          <NavItem icon={FolderOpen} label="Projets" badge={projects.length} active={view === "projects" || view === "project"} onClick={() => { setView("projects"); setNavOpen(false); }} />
+        </nav>
+
+        <div className="nav-label mono">Bibliothèque</div>
+        <div className="lib">
+          {DOC_TYPES.map((d) => (
+            <div key={d.key} className="lib-item">
+              <d.Icon size={15} /> <span>{d.name}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="side-foot">
+          <div className="firm">
+            <Compass size={15} />
+            <div>
+              <div className="firm-name">{FIRM}</div>
+              <div className="firm-sub mono">Architecture & Génie Civil</div>
+            </div>
+          </div>
+        </div>
+      </aside>
+      {navOpen && <div className="scrim" onClick={() => setNavOpen(false)} />}
+
+      {/* Main */}
+      <div className={"main" + (viewer ? " no-print" : "")}>
+        <header className="topbar">
+          <button className="icon-btn only-mobile" onClick={() => setNavOpen(true)} aria-label="Menu"><Menu size={20} /></button>
+          <div className="search">
+            <Search size={16} />
+            <input placeholder="Rechercher un projet, un document…" value={query} onChange={(e) => setQuery(e.target.value)} />
+          </div>
+          <div className="top-actions">
+            <button className="icon-btn"><Settings size={18} /></button>
+            <div className="avatar">EI</div>
+          </div>
+        </header>
+
+        <main className="content">
+          {view === "dashboard" && <Dashboard stats={stats} projects={projects} onOpen={openProject} onNew={() => setWizardOpen(true)} query={query} />}
+          {view === "projects" && <ProjectsList projects={projects} onOpen={openProject} onNew={() => setWizardOpen(true)} onDelete={deleteProject} query={query} />}
+          {view === "project" && active && (
+            <ProjectWorkspace
+              project={active}
+              busy={busy}
+              onBack={() => setView("projects")}
+              onGenerate={(keys) => generate(active.id, keys)}
+              onOpenDoc={(key) => setViewer({ projectId: active.id, key })}
+              onDelete={() => deleteProject(active.id)}
+            />
+          )}
+        </main>
+      </div>
+
+      {wizardOpen && <Wizard onClose={() => setWizardOpen(false)} onCreate={createProject} />}
+
+      {viewer && active && (() => {
+        const proj = projects.find((p) => p.id === viewer.projectId);
+        if (!proj) return null;
+        return (
+          <DocViewer
+            project={proj}
+            docKey={viewer.key}
+            doc={proj.documents[viewer.key]}
+            onClose={() => setViewer(null)}
+            onSave={(content) => patchDoc(proj.id, viewer.key, { content })}
+            onRegen={() => generate(proj.id, [viewer.key])}
+            busy={busy.has(proj.id + ":" + viewer.key)}
+            toast={showToast}
+          />
+        );
+      })()}
+
+      {toast && (
+        <div className={"toast " + toast.kind}>
+          {toast.kind === "ok" ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />} {toast.msg}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------------------- Sous-composants ----------------------------- */
+
+function NavItem({ icon: Icon, label, active, onClick, badge }) {
+  return (
+    <button className={"nav-item" + (active ? " active" : "")} onClick={onClick}>
+      <Icon size={18} /> <span>{label}</span>
+      {badge != null && <span className="nav-badge mono">{badge}</span>}
+    </button>
+  );
+}
+
+function LogoMark() {
+  return (
+    <svg width="34" height="34" viewBox="0 0 34 34" className="logo">
+      <rect x="1.5" y="1.5" width="31" height="31" rx="7" fill="var(--ink)" stroke="var(--accent)" strokeWidth="1.5" />
+      <path d="M9 24 L17 9 L25 24" fill="none" stroke="var(--paper)" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+      <line x1="12.5" y1="24" x2="21.5" y2="24" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" />
+      <circle cx="17" cy="9" r="1.7" fill="var(--accent)" />
+    </svg>
+  );
+}
+
+function StatusPill({ status, busy }) {
+  if (busy || status === "generating") return <span className="pill gen mono"><Loader2 size={12} className="spin" /> En cours</span>;
+  if (status === "done") return <span className="pill ok mono"><CheckCircle2 size={12} /> Prêt</span>;
+  return <span className="pill idle mono"><Clock size={12} /> À générer</span>;
+}
+
+function progressOf(p) {
+  const total = DOC_TYPES.length;
+  const done = Object.values(p.documents).filter((d) => d.status === "done").length;
+  return { done, total, pct: Math.round((done / total) * 100) };
+}
+
+/* -------- Dashboard -------- */
+function Dashboard({ stats, projects, onOpen, onNew, query }) {
+  const filtered = projects.filter((p) => !query || (p.name + p.loc + p.mo).toLowerCase().includes(query.toLowerCase()));
+  return (
+    <div className="page reveal">
+      <div className="hero">
+        <div className="hero-mark mono">// ATELIER DE PRODUCTION DOCUMENTAIRE</div>
+        <h1 className="page-title">Bonjour, Ingénieur.</h1>
+        <p className="page-sub">Insérez vos plans et les TDR — <strong>OUVRAGE</strong> rédige automatiquement l'intégralité du dossier administratif et technique de vos marchés.</p>
+        <button className="btn-primary lg" onClick={onNew}><Sparkles size={17} /> Lancer un nouveau dossier</button>
+      </div>
+
+      <div className="stats">
+        <StatCard icon={FolderOpen} label="Projets" value={stats.projects} hint="dans l'atelier" />
+        <StatCard icon={FileText} label="Documents générés" value={stats.docs} hint="prêts à livrer" accent />
+        <StatCard icon={Coins} label="Portefeuille" value={compact(stats.sum)} unit="FCFA" hint="montant cumulé HT" />
+        <StatCard icon={Hammer} label="En production" value={stats.enCours} hint="dossiers en cours" />
+      </div>
+
+      <div className="section-head">
+        <h2 className="section-title">Projets récents</h2>
+        <span className="mono link">Tout voir</span>
+      </div>
+      <div className="cards-grid">
+        {filtered.map((p, i) => <ProjectCard key={p.id} p={p} onClick={() => onOpen(p.id)} delay={i} />)}
+        <button className="add-card" onClick={onNew}>
+          <Plus size={26} /><span>Nouveau projet</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ icon: Icon, label, value, unit, hint, accent }) {
+  return (
+    <div className={"stat" + (accent ? " stat-accent" : "")}>
+      <div className="stat-top"><Icon size={18} /><span className="reg-mark mono">+</span></div>
+      <div className="stat-value">{value}{unit && <span className="stat-unit mono"> {unit}</span>}</div>
+      <div className="stat-label">{label}</div>
+      <div className="stat-hint mono">{hint}</div>
+    </div>
+  );
+}
+
+function ProjectCard({ p, onClick, delay = 0 }) {
+  const pr = progressOf(p);
+  return (
+    <button className="pcard" style={{ animationDelay: delay * 60 + "ms" }} onClick={onClick}>
+      <div className="pcard-top">
+        <span className="ouvrage-tag mono">{p.type}</span>
+        <ChevronRight size={18} className="pcard-arrow" />
+      </div>
+      <h3 className="pcard-title">{p.name}</h3>
+      <div className="pcard-meta">
+        <span><MapPin size={13} /> {p.loc}</span>
+        <span><Coins size={13} /> {compact(p.montant)} {p.currency}</span>
+      </div>
+      <div className="pcard-foot">
+        <div className="bar"><div className="bar-fill" style={{ width: pr.pct + "%" }} /></div>
+        <span className="mono pct">{pr.done}/{pr.total}</span>
+      </div>
+    </button>
+  );
+}
+
+/* -------- Projects list -------- */
+function ProjectsList({ projects, onOpen, onNew, onDelete, query }) {
+  const filtered = projects.filter((p) => !query || (p.name + p.loc + p.mo).toLowerCase().includes(query.toLowerCase()));
+  return (
+    <div className="page reveal">
+      <div className="section-head big">
+        <div>
+          <div className="hero-mark mono">// PROJETS</div>
+          <h1 className="page-title">Vos dossiers</h1>
+        </div>
+        <button className="btn-primary" onClick={onNew}><Plus size={16} /> Nouveau</button>
+      </div>
+
+      <div className="table-card">
+        <table className="ptable">
+          <thead>
+            <tr>
+              <th>Projet</th><th className="hide-sm">Type</th><th className="hide-md">Localisation</th>
+              <th>Montant</th><th>Dossier</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((p) => {
+              const pr = progressOf(p);
+              return (
+                <tr key={p.id} onClick={() => onOpen(p.id)}>
+                  <td>
+                    <div className="pt-name">{p.name}</div>
+                    <div className="pt-sub mono">{p.mo}</div>
+                  </td>
+                  <td className="hide-sm"><span className="ouvrage-tag sm mono">{p.type}</span></td>
+                  <td className="hide-md mono soft">{p.loc}</td>
+                  <td className="mono">{fmt(p.montant, p.currency)}</td>
+                  <td>
+                    <div className="pt-prog">
+                      <div className="bar sm"><div className="bar-fill" style={{ width: pr.pct + "%" }} /></div>
+                      <span className="mono pct">{pr.done}/{pr.total}</span>
+                    </div>
+                  </td>
+                  <td className="row-actions">
+                    <button className="icon-btn sm danger" onClick={(e) => { e.stopPropagation(); onDelete(p.id); }} aria-label="Supprimer"><Trash2 size={15} /></button>
+                    <ChevronRight size={16} className="soft" />
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {filtered.length === 0 && <div className="empty"><FolderOpen size={28} /><p>Aucun projet ne correspond.</p></div>}
+      </div>
+    </div>
+  );
+}
+
+/* -------- Project workspace -------- */
+function ProjectWorkspace({ project, busy, onBack, onGenerate, onOpenDoc, onDelete }) {
+  const c = calc(project);
+  const pr = progressOf(project);
+  const pending = DOC_TYPES.filter((d) => project.documents[d.key].status !== "done").map((d) => d.key);
+  const anyBusy = DOC_TYPES.some((d) => busy.has(project.id + ":" + d.key));
+
+  return (
+    <div className="page reveal">
+      <button className="back" onClick={onBack}><ChevronLeft size={16} /> Projets</button>
+
+      <div className="proj-head">
+        <div className="proj-head-main">
+          <span className="ouvrage-tag mono">{project.type}</span>
+          <h1 className="page-title">{project.name}</h1>
+          <div className="proj-meta">
+            <span><Building2 size={14} /> {project.mo}</span>
+            <span><MapPin size={14} /> {project.loc}</span>
+            <span><Calendar size={14} /> {project.delai} mois</span>
+          </div>
+        </div>
+        <div className="proj-head-side">
+          <button className="btn-primary" disabled={anyBusy || pending.length === 0} onClick={() => onGenerate(pending)}>
+            {anyBusy ? <Loader2 size={16} className="spin" /> : <Sparkles size={16} />}
+            {pending.length === 0 ? "Dossier complet" : "Tout générer (" + pending.length + ")"}
+          </button>
+          <button className="icon-btn danger" onClick={onDelete} aria-label="Supprimer le projet"><Trash2 size={17} /></button>
+        </div>
+      </div>
+
+      <div className="proj-info">
+        <InfoTile label="Montant HT" value={fmt(c.ht, project.currency)} />
+        <InfoTile label={"TVA " + c.tva + " %"} value={fmt(c.tvaAmt, project.currency)} />
+        <InfoTile label="Montant TTC" value={fmt(c.ttc, project.currency)} accent />
+        <InfoTile label="Avancement" value={pr.pct + " %"} bar={pr.pct} />
+      </div>
+
+      {project.tdr && (
+        <div className="tdr-card">
+          <div className="tdr-head mono"><ClipboardList size={14} /> TERMES DE RÉFÉRENCE</div>
+          <p>{project.tdr}</p>
+          {project.plans.length > 0 && (
+            <div className="plan-strip">
+              {project.plans.map((f, i) => (
+                <div key={i} className="plan-thumb">
+                  {f.dataUrl ? <img src={f.dataUrl} alt={f.name} /> : <div className="plan-file"><FileText size={18} /></div>}
+                  <span className="mono">{f.name}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="section-head"><h2 className="section-title">Documents du marché</h2><span className="mono soft">{pr.done} / {pr.total} générés</span></div>
+
+      <div className="docs-grid">
+        {DOC_TYPES.map((d, i) => {
+          const doc = project.documents[d.key];
+          const isBusy = busy.has(project.id + ":" + d.key);
+          const done = doc.status === "done";
+          return (
+            <div key={d.key} className={"doc-card" + (done ? " done" : "")} style={{ animationDelay: i * 45 + "ms" }}>
+              <div className="doc-card-head">
+                <div className={"doc-ic fam-" + d.fam.toLowerCase()}><d.Icon size={18} /></div>
+                <StatusPill status={doc.status} busy={isBusy} />
+              </div>
+              <div className="doc-name">{d.name}</div>
+              <div className="doc-full">{d.full}</div>
+              <div className="doc-fam mono">{d.fam}{done && doc.source === "ai" ? " · IA" : done ? " · modèle" : ""}</div>
+              <div className="doc-actions">
+                {done ? (
+                  <>
+                    <button className="btn-soft" onClick={() => onOpenDoc(d.key)}><Eye size={14} /> Ouvrir</button>
+                    <button className="icon-btn sm" disabled={isBusy} onClick={() => onGenerate([d.key])} aria-label="Régénérer">{isBusy ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}</button>
+                  </>
+                ) : (
+                  <button className="btn-soft full" disabled={isBusy} onClick={() => onGenerate([d.key])}>
+                    {isBusy ? <><Loader2 size={14} className="spin" /> Génération…</> : <><Sparkles size={14} /> Générer</>}
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function InfoTile({ label, value, accent, bar }) {
+  return (
+    <div className={"info-tile" + (accent ? " accent" : "")}>
+      <div className="info-label mono">{label}</div>
+      <div className="info-value">{value}</div>
+      {bar != null && <div className="bar tiny"><div className="bar-fill" style={{ width: bar + "%" }} /></div>}
+    </div>
+  );
+}
+
+/* -------- Wizard -------- */
+function Wizard({ onClose, onCreate }) {
+  const [step, setStep] = useState(0);
+  const [data, setData] = useState({
+    name: "", mo: "", moe: FIRM, loc: "", type: "Bâtiment scolaire",
+    montant: "", tva: 19.25, delai: "", currency: "FCFA", tdr: "", plans: [],
+  });
+  const [selected, setSelected] = useState(DOC_TYPES.map((d) => d.key));
+  const fileRef = useRef(null);
+
+  const set = (k, v) => setData((d) => ({ ...d, [k]: v }));
+  const steps = ["Informations", "Plans", "TDR", "Documents"];
+
+  const canNext = () => {
+    if (step === 0) return data.name.trim() && data.mo.trim() && data.montant && data.delai;
+    return true;
+  };
+
+  const addFiles = (files) => {
+    Array.from(files).forEach((f) => {
+      if (f.type.startsWith("image/")) {
+        const r = new FileReader();
+        r.onload = () => setData((d) => ({ ...d, plans: [...d.plans, { name: f.name, type: f.type, dataUrl: r.result }] }));
+        r.readAsDataURL(f);
+      } else {
+        setData((d) => ({ ...d, plans: [...d.plans, { name: f.name, type: f.type, dataUrl: null }] }));
+      }
+    });
+  };
+  const removePlan = (i) => setData((d) => ({ ...d, plans: d.plans.filter((_, idx) => idx !== i) }));
+
+  const toggleDoc = (k) => setSelected((s) => s.includes(k) ? s.filter((x) => x !== k) : [...s, k]);
+
+  const finish = () => onCreate({ ...data, montant: Number(data.montant) || 0, tva: Number(data.tva) || 0, delai: Number(data.delai) || 0 }, selected);
+
+  return (
+    <div className="modal-scrim" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-head">
+          <div>
+            <div className="mono hero-mark">// NOUVEAU DOSSIER</div>
+            <h2 className="modal-title">Créer un projet</h2>
+          </div>
+          <button className="icon-btn" onClick={onClose}><X size={20} /></button>
+        </div>
+
+        <div className="stepper">
+          {steps.map((s, i) => (
+            <div key={i} className={"step" + (i === step ? " current" : "") + (i < step ? " done" : "")}>
+              <span className="step-dot mono">{i < step ? <Check size={12} /> : i + 1}</span>
+              <span className="step-label">{s}</span>
+            </div>
+          ))}
+        </div>
+
+        <div className="modal-body">
+          {step === 0 && (
+            <div className="form-grid reveal">
+              <Field label="Intitulé du projet" full>
+                <input value={data.name} onChange={(e) => set("name", e.target.value)} placeholder="Ex : Construction d'un complexe scolaire R+2" />
+              </Field>
+              <Field label="Maître d'ouvrage">
+                <input value={data.mo} onChange={(e) => set("mo", e.target.value)} placeholder="Ex : Communauté Urbaine de Douala" />
+              </Field>
+              <Field label="Maître d'œuvre (BET)">
+                <input value={data.moe} onChange={(e) => set("moe", e.target.value)} />
+              </Field>
+              <Field label="Localisation">
+                <input value={data.loc} onChange={(e) => set("loc", e.target.value)} placeholder="Ville, pays" />
+              </Field>
+              <Field label="Type d'ouvrage">
+                <select value={data.type} onChange={(e) => set("type", e.target.value)}>
+                  {OUVRAGE_TYPES.map((t) => <option key={t}>{t}</option>)}
+                </select>
+              </Field>
+              <Field label="Montant estimé HT">
+                <div className="input-cur">
+                  <input type="number" value={data.montant} onChange={(e) => set("montant", e.target.value)} placeholder="485000000" />
+                  <span className="mono">{data.currency}</span>
+                </div>
+              </Field>
+              <Field label="TVA (%)">
+                <input type="number" step="0.01" value={data.tva} onChange={(e) => set("tva", e.target.value)} />
+              </Field>
+              <Field label="Délai d'exécution (mois)">
+                <input type="number" value={data.delai} onChange={(e) => set("delai", e.target.value)} placeholder="10" />
+              </Field>
+              <Field label="Devise">
+                <select value={data.currency} onChange={(e) => set("currency", e.target.value)}>
+                  <option value="FCFA">FCFA (XAF/XOF)</option>
+                  <option value="€">Euro (€)</option>
+                </select>
+              </Field>
+            </div>
+          )}
+
+          {step === 1 && (
+            <div className="reveal">
+              <p className="step-hint">Importez les plans architecturaux (PDF, JPG, PNG). Les plans images sont analysés par l'IA pour adapter les ouvrages et quantités.</p>
+              <label className="dropzone" onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); addFiles(e.dataTransfer.files); }}>
+                <input ref={fileRef} type="file" multiple accept="image/*,.pdf,.dwg,.doc,.docx" hidden onChange={(e) => addFiles(e.target.files)} />
+                <Upload size={26} />
+                <div className="dz-title">Glissez vos plans ici</div>
+                <div className="dz-sub mono">ou cliquez pour parcourir · PDF, JPG, PNG, DWG</div>
+              </label>
+              {data.plans.length > 0 && (
+                <div className="plan-grid">
+                  {data.plans.map((f, i) => (
+                    <div key={i} className="plan-card">
+                      {f.dataUrl ? <img src={f.dataUrl} alt={f.name} /> : <div className="plan-file"><FileText size={24} /></div>}
+                      <div className="plan-card-foot">
+                        <span className="mono">{f.name}</span>
+                        <button className="icon-btn sm danger" onClick={() => removePlan(i)}><Trash2 size={13} /></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {step === 2 && (
+            <div className="reveal">
+              <p className="step-hint">Collez les Termes de Référence (TDR) ou la fiche du marché. Plus le contexte est riche, plus les documents générés sont précis.</p>
+              <textarea className="tdr-area" rows={11} value={data.tdr} onChange={(e) => set("tdr", e.target.value)}
+                placeholder={"Objet, consistance des travaux, capacités, contraintes techniques, exigences particulières du maître d'ouvrage…"} />
+              <label className="tdr-file mono">
+                <input type="file" accept=".txt,.md" hidden onChange={(e) => { const f = e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = () => set("tdr", String(r.result)); r.readAsText(f); }} />
+                <Upload size={14} /> Importer depuis un fichier texte (.txt)
+              </label>
+            </div>
+          )}
+
+          {step === 3 && (
+            <div className="reveal">
+              <p className="step-hint">Sélectionnez les pièces à produire. L'IA les rédige à partir de vos informations.</p>
+              <div className="doc-select">
+                {DOC_TYPES.map((d) => {
+                  const on = selected.includes(d.key);
+                  return (
+                    <button key={d.key} className={"ds-item" + (on ? " on" : "")} onClick={() => toggleDoc(d.key)}>
+                      <div className={"doc-ic fam-" + d.fam.toLowerCase()}><d.Icon size={16} /></div>
+                      <div className="ds-text">
+                        <div className="ds-name">{d.name}</div>
+                        <div className="ds-full">{d.full}</div>
+                      </div>
+                      <span className={"check" + (on ? " on" : "")}>{on && <Check size={13} />}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="recap mono">
+                <span><strong>{selected.length}</strong> document(s) · {data.name || "Projet"}</span>
+                <span>{data.montant ? fmt(data.montant, data.currency) : "—"}</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="modal-foot">
+          {step > 0 ? <button className="btn-ghost" onClick={() => setStep((s) => s - 1)}><ChevronLeft size={16} /> Retour</button> : <span />}
+          {step < 3 ? (
+            <button className="btn-primary" disabled={!canNext()} onClick={() => setStep((s) => s + 1)}>Continuer <ChevronRight size={16} /></button>
+          ) : (
+            <button className="btn-primary" disabled={selected.length === 0} onClick={finish}><Sparkles size={16} /> Créer & générer</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, children, full }) {
+  return (
+    <div className={"field" + (full ? " full" : "")}>
+      <label className="mono">{label}</label>
+      {children}
+    </div>
+  );
+}
+
+/* -------- Document viewer -------- */
+function DocViewer({ project, docKey, doc, onClose, onSave, onRegen, busy, toast }) {
+  const meta = DOC_MAP[docKey];
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(doc.content || "");
+  useEffect(() => { setDraft(doc.content || ""); }, [doc.content]);
+
+  const save = () => { onSave(draft); setEditing(false); toast("Modifications enregistrées ✓"); };
+  const copy = () => { navigator.clipboard.writeText(doc.content || "").then(() => toast("Copié dans le presse-papiers ✓")); };
+  const download = () => {
+    const blob = new Blob([doc.content || ""], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = (project.name.replace(/[^a-z0-9]+/gi, "-") + "-" + meta.name).toLowerCase() + ".md";
+    a.click(); URL.revokeObjectURL(url);
+    toast("Téléchargé (.md) ✓");
+  };
+  const print = () => window.print();
+
+  return (
+    <div className="doc-overlay">
+      <div className="doc-bar no-print">
+        <button className="icon-btn" onClick={onClose}><X size={20} /></button>
+        <div className="doc-bar-title">
+          <meta.Icon size={17} />
+          <div>
+            <div className="dbt-name">{meta.name}</div>
+            <div className="dbt-sub mono">{project.name}</div>
+          </div>
+          {doc.source && <span className={"src-tag mono " + doc.source}>{doc.source === "ai" ? "IA" : "Modèle"}</span>}
+        </div>
+        <div className="doc-bar-actions">
+          {editing ? (
+            <>
+              <button className="btn-ghost" onClick={() => { setDraft(doc.content); setEditing(false); }}>Annuler</button>
+              <button className="btn-primary" onClick={save}><Check size={15} /> Enregistrer</button>
+            </>
+          ) : (
+            <>
+              <button className="icon-btn" title="Régénérer" disabled={busy} onClick={onRegen}>{busy ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}</button>
+              <button className="icon-btn" title="Modifier" onClick={() => setEditing(true)}><Pencil size={17} /></button>
+              <button className="icon-btn" title="Copier" onClick={copy}><Copy size={17} /></button>
+              <button className="icon-btn" title="Télécharger" onClick={download}><Download size={17} /></button>
+              <button className="btn-primary" onClick={print}><Printer size={15} /> PDF</button>
+            </>
+          )}
+        </div>
+      </div>
+
+      <div className="doc-scroll">
+        {busy && !doc.content ? (
+          <div className="doc-loading">
+            <Loader2 size={30} className="spin" />
+            <div>Rédaction du document en cours…</div>
+            <div className="mono soft">L'IA analyse le projet et les TDR</div>
+          </div>
+        ) : editing ? (
+          <textarea className="doc-edit" value={draft} onChange={(e) => setDraft(e.target.value)} spellCheck={false} />
+        ) : (
+          <div className="doc-paper doc-print-area">
+            <div className="doc-watermark mono no-print">{project.moe || FIRM}</div>
+            <Markdown text={doc.content} />
+            <div className="doc-footer mono">Document généré par OUVRAGE Studio · {project.moe || FIRM} · {new Date().toLocaleDateString("fr-FR")}</div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------- Styles ----------------------------------- */
+function StyleTag() {
+  return (
+    <style>{`
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+
+:root{
+  --paper:#EAE6DC; --surface:#FBFAF6; --surface-2:#F3F0E8;
+  --ink:#16212B; --ink-2:#243441; --ink-soft:#46535F; --ink-faint:#7C8690;
+  --line:#D8D1C2; --line-soft:#E5DFD2;
+  --accent:#BE4527; --accent-deep:#9C3219; --accent-soft:#F0DAD1;
+  --blueprint:#2E5266; --blueprint-soft:#D9E3E9;
+  --gold:#A9803F; --green:#3C6B4A; --green-soft:#D9E6DD;
+  --radius:14px; --shadow:0 1px 2px rgba(22,33,43,.06), 0 12px 32px -12px rgba(22,33,43,.18);
+}
+*{box-sizing:border-box;}
+.app-root{
+  font-family:'IBM Plex Sans',sans-serif; color:var(--ink); background:var(--paper);
+  min-height:100vh; display:flex;
+  background-image:
+    linear-gradient(rgba(22,33,43,.025) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(22,33,43,.025) 1px, transparent 1px);
+  background-size:30px 30px;
+}
+.mono{font-family:'IBM Plex Mono',monospace;}
+.soft{color:var(--ink-faint);}
+.spin{animation:spin 1s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.reveal{animation:fade .5s ease both;}
+@keyframes fade{from{opacity:0;transform:translateY(8px);}to{opacity:1;transform:none;}}
+
+/* Sidebar */
+.sidebar{
+  width:252px; flex:0 0 252px; background:var(--ink); color:#E8EAEC;
+  padding:20px 16px; display:flex; flex-direction:column; gap:18px;
+  position:sticky; top:0; height:100vh; z-index:40;
+}
+.brand{display:flex; align-items:center; gap:11px;}
+.brand-name{font-family:'Archivo';font-weight:900;font-size:19px;letter-spacing:.06em;line-height:1;}
+.brand-sub{font-size:9.5px;letter-spacing:.22em;color:var(--accent);margin-top:3px;}
+.btn-new{
+  display:flex;align-items:center;justify-content:center;gap:8px;width:100%;
+  background:var(--accent);color:#fff;border:none;border-radius:10px;padding:11px;
+  font-family:'IBM Plex Sans';font-weight:600;font-size:13.5px;cursor:pointer;
+  transition:.18s; box-shadow:0 6px 18px -8px var(--accent);
+}
+.btn-new:hover{background:var(--accent-deep);transform:translateY(-1px);}
+.nav{display:flex;flex-direction:column;gap:3px;}
+.nav-item{
+  display:flex;align-items:center;gap:11px;width:100%;background:none;border:none;
+  color:#AEB6BD;padding:9px 11px;border-radius:9px;cursor:pointer;font-size:13.5px;
+  font-family:'IBM Plex Sans';font-weight:500;transition:.15s;text-align:left;
+}
+.nav-item:hover{background:rgba(255,255,255,.06);color:#fff;}
+.nav-item.active{background:rgba(190,69,39,.16);color:#fff;}
+.nav-item span{flex:1;}
+.nav-badge{font-size:10px;background:rgba(255,255,255,.1);padding:2px 7px;border-radius:20px;}
+.nav-label{font-size:9.5px;letter-spacing:.2em;color:#5C666E;padding:0 8px;margin-top:4px;}
+.lib{display:flex;flex-direction:column;gap:1px;overflow:auto;flex:1;}
+.lib-item{display:flex;align-items:center;gap:9px;padding:6px 10px;color:#8A929A;font-size:12px;border-radius:7px;transition:.15s;}
+.lib-item:hover{color:#CDD3D8;background:rgba(255,255,255,.04);}
+.side-foot{border-top:1px solid rgba(255,255,255,.08);padding-top:14px;}
+.firm{display:flex;align-items:center;gap:10px;color:#9AA2A9;}
+.firm-name{font-size:12px;font-weight:600;color:#D5DADE;}
+.firm-sub{font-size:9px;letter-spacing:.12em;color:#5C666E;margin-top:2px;}
+.scrim{position:fixed;inset:0;background:rgba(22,33,43,.45);z-index:35;backdrop-filter:blur(2px);}
+
+/* Main */
+.main{flex:1;min-width:0;display:flex;flex-direction:column;}
+.topbar{
+  position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:14px;
+  padding:14px 26px;background:rgba(234,230,220,.82);backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--line);
+}
+.search{flex:1;max-width:480px;display:flex;align-items:center;gap:9px;background:var(--surface);
+  border:1px solid var(--line);border-radius:11px;padding:9px 13px;color:var(--ink-faint);}
+.search input{border:none;background:none;outline:none;flex:1;font-family:'IBM Plex Sans';font-size:13.5px;color:var(--ink);}
+.top-actions{display:flex;align-items:center;gap:10px;margin-left:auto;}
+.avatar{width:34px;height:34px;border-radius:9px;background:var(--ink);color:#fff;display:flex;align-items:center;justify-content:center;
+  font-family:'Archivo';font-weight:700;font-size:12px;letter-spacing:.04em;}
+.icon-btn{display:flex;align-items:center;justify-content:center;width:38px;height:38px;border-radius:10px;border:1px solid var(--line);
+  background:var(--surface);color:var(--ink-soft);cursor:pointer;transition:.15s;}
+.icon-btn:hover{background:var(--surface-2);color:var(--ink);border-color:var(--ink-faint);}
+.icon-btn.sm{width:32px;height:32px;border-radius:8px;}
+.icon-btn.danger:hover{background:var(--accent-soft);color:var(--accent-deep);border-color:var(--accent);}
+.icon-btn:disabled{opacity:.5;cursor:default;}
+.only-mobile{display:none;}
+
+.content{padding:30px 26px 60px;max-width:1180px;width:100%;margin:0 auto;}
+.page-title{font-family:'Archivo';font-weight:800;font-size:33px;letter-spacing:-.02em;margin:6px 0 0;line-height:1.05;}
+.page-sub{color:var(--ink-soft);font-size:15px;max-width:620px;margin:12px 0 0;line-height:1.55;}
+.hero-mark{font-size:11px;letter-spacing:.18em;color:var(--accent);font-weight:600;}
+
+/* Hero */
+.hero{position:relative;background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:34px 34px 32px;overflow:hidden;
+  box-shadow:var(--shadow);}
+.hero::after{content:"";position:absolute;right:-60px;top:-60px;width:260px;height:260px;border-radius:50%;
+  background:radial-gradient(circle, var(--accent-soft), transparent 70%);opacity:.6;}
+.hero::before{content:"";position:absolute;right:34px;bottom:-30px;width:160px;height:160px;
+  background-image:repeating-linear-gradient(45deg, var(--line) 0 1px, transparent 1px 9px);opacity:.7;}
+.hero .btn-primary{margin-top:22px;position:relative;z-index:2;}
+
+/* Buttons */
+.btn-primary{display:inline-flex;align-items:center;gap:8px;background:var(--ink);color:#fff;border:none;border-radius:11px;
+  padding:11px 18px;font-family:'IBM Plex Sans';font-weight:600;font-size:13.5px;cursor:pointer;transition:.18s;}
+.btn-primary:hover{background:var(--ink-2);transform:translateY(-1px);box-shadow:0 8px 20px -10px rgba(22,33,43,.6);}
+.btn-primary:disabled{opacity:.45;cursor:default;transform:none;box-shadow:none;}
+.btn-primary.lg{padding:13px 22px;font-size:14.5px;border-radius:12px;}
+.btn-ghost{display:inline-flex;align-items:center;gap:7px;background:none;border:1px solid var(--line);color:var(--ink-soft);
+  border-radius:10px;padding:10px 15px;font-family:'IBM Plex Sans';font-weight:500;font-size:13px;cursor:pointer;transition:.15s;}
+.btn-ghost:hover{background:var(--surface-2);color:var(--ink);}
+.btn-soft{display:inline-flex;align-items:center;justify-content:center;gap:7px;background:var(--surface-2);border:1px solid var(--line);
+  color:var(--ink);border-radius:9px;padding:8px 13px;font-family:'IBM Plex Sans';font-weight:600;font-size:12.5px;cursor:pointer;transition:.15s;}
+.btn-soft:hover{background:var(--ink);color:#fff;border-color:var(--ink);}
+.btn-soft.full{width:100%;}
+.btn-soft:disabled{opacity:.6;cursor:default;}
+
+/* Stats */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:26px;}
+.stat{background:var(--surface);border:1px solid var(--line);border-radius:15px;padding:18px;position:relative;transition:.2s;}
+.stat:hover{transform:translateY(-2px);box-shadow:var(--shadow);}
+.stat-accent{background:var(--ink);color:#fff;border-color:var(--ink);}
+.stat-accent .stat-label,.stat-accent .stat-hint{color:#AEB6BD;}
+.stat-top{display:flex;justify-content:space-between;align-items:center;color:var(--accent);}
+.stat-accent .stat-top{color:var(--accent-soft);}
+.reg-mark{font-size:14px;color:var(--ink-faint);}
+.stat-value{font-family:'Archivo';font-weight:800;font-size:30px;margin-top:14px;letter-spacing:-.02em;}
+.stat-unit{font-size:13px;color:var(--ink-faint);font-weight:500;}
+.stat-label{font-size:13px;font-weight:600;margin-top:3px;}
+.stat-hint{font-size:10px;letter-spacing:.05em;color:var(--ink-faint);margin-top:5px;}
+
+/* Section head */
+.section-head{display:flex;align-items:center;justify-content:space-between;margin:34px 0 16px;}
+.section-head.big{margin-top:6px;}
+.section-title{font-family:'Archivo';font-weight:700;font-size:19px;letter-spacing:-.01em;}
+.link{font-size:11px;color:var(--accent);cursor:pointer;letter-spacing:.05em;}
+
+/* Project cards */
+.cards-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:15px;}
+.pcard{text-align:left;background:var(--surface);border:1px solid var(--line);border-radius:15px;padding:18px;cursor:pointer;
+  transition:.2s;animation:fade .5s ease both;display:flex;flex-direction:column;gap:0;}
+.pcard:hover{transform:translateY(-3px);box-shadow:var(--shadow);border-color:var(--ink-faint);}
+.pcard-top{display:flex;justify-content:space-between;align-items:flex-start;}
+.pcard-arrow{color:var(--ink-faint);transition:.2s;}
+.pcard:hover .pcard-arrow{color:var(--accent);transform:translateX(3px);}
+.ouvrage-tag{display:inline-block;font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--blueprint);
+  background:var(--blueprint-soft);padding:4px 9px;border-radius:6px;font-weight:600;}
+.ouvrage-tag.sm{font-size:9px;padding:3px 7px;}
+.pcard-title{font-family:'Archivo';font-weight:700;font-size:16.5px;margin:14px 0 0;line-height:1.25;letter-spacing:-.01em;}
+.pcard-meta{display:flex;flex-direction:column;gap:6px;margin:13px 0 16px;color:var(--ink-faint);font-size:12.5px;}
+.pcard-meta span{display:flex;align-items:center;gap:7px;}
+.pcard-foot{display:flex;align-items:center;gap:10px;margin-top:auto;}
+.bar{flex:1;height:6px;background:var(--surface-2);border-radius:20px;overflow:hidden;border:1px solid var(--line-soft);}
+.bar.sm{height:5px;}
+.bar.tiny{height:5px;margin-top:8px;}
+.bar-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--gold));border-radius:20px;transition:width .5s;}
+.pct{font-size:11px;color:var(--ink-soft);}
+.add-card{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;border:1.5px dashed var(--line);
+  border-radius:15px;background:none;color:var(--ink-faint);cursor:pointer;transition:.2s;min-height:160px;font-family:'IBM Plex Sans';font-size:13px;}
+.add-card:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft);}
+
+/* Table */
+.table-card{background:var(--surface);border:1px solid var(--line);border-radius:16px;overflow:hidden;box-shadow:var(--shadow);}
+.ptable{width:100%;border-collapse:collapse;}
+.ptable thead th{text-align:left;font-family:'IBM Plex Mono';font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--ink-faint);padding:14px 18px;border-bottom:1px solid var(--line);font-weight:500;}
+.ptable tbody tr{border-bottom:1px solid var(--line-soft);cursor:pointer;transition:.13s;}
+.ptable tbody tr:hover{background:var(--surface-2);}
+.ptable tbody tr:last-child{border-bottom:none;}
+.ptable td{padding:14px 18px;font-size:13.5px;vertical-align:middle;}
+.pt-name{font-weight:600;font-size:14px;}
+.pt-sub{font-size:10.5px;color:var(--ink-faint);margin-top:3px;}
+.pt-prog{display:flex;align-items:center;gap:9px;min-width:110px;}
+.row-actions{display:flex;align-items:center;gap:8px;justify-content:flex-end;}
+.empty{display:flex;flex-direction:column;align-items:center;gap:10px;padding:50px;color:var(--ink-faint);}
+
+/* Back */
+.back{display:inline-flex;align-items:center;gap:5px;background:none;border:none;color:var(--ink-faint);cursor:pointer;
+  font-family:'IBM Plex Mono';font-size:12px;letter-spacing:.04em;margin-bottom:16px;transition:.15s;}
+.back:hover{color:var(--accent);}
+
+/* Project head */
+.proj-head{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;flex-wrap:wrap;}
+.proj-meta{display:flex;gap:18px;flex-wrap:wrap;color:var(--ink-soft);font-size:13px;margin-top:14px;}
+.proj-meta span{display:flex;align-items:center;gap:7px;}
+.proj-head-side{display:flex;gap:10px;align-items:center;}
+.proj-info{display:grid;grid-template-columns:repeat(4,1fr);gap:13px;margin-top:24px;}
+.info-tile{background:var(--surface);border:1px solid var(--line);border-radius:13px;padding:15px 16px;}
+.info-tile.accent{background:var(--ink);color:#fff;border-color:var(--ink);}
+.info-label{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint);}
+.info-tile.accent .info-label{color:var(--accent-soft);}
+.info-value{font-family:'Archivo';font-weight:700;font-size:18px;margin-top:7px;letter-spacing:-.01em;}
+
+/* TDR card */
+.tdr-card{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--blueprint);border-radius:13px;padding:18px 20px;margin-top:22px;}
+.tdr-head{font-size:10px;letter-spacing:.14em;color:var(--blueprint);display:flex;align-items:center;gap:8px;font-weight:600;}
+.tdr-card p{font-size:13.5px;color:var(--ink-soft);line-height:1.6;margin:11px 0 0;}
+.plan-strip{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap;}
+.plan-thumb{display:flex;flex-direction:column;gap:5px;width:90px;}
+.plan-thumb img{width:90px;height:64px;object-fit:cover;border-radius:7px;border:1px solid var(--line);}
+.plan-thumb .mono{font-size:9px;color:var(--ink-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.plan-file{width:90px;height:64px;border-radius:7px;border:1px solid var(--line);background:var(--surface-2);display:flex;align-items:center;justify-content:center;color:var(--ink-faint);}
+
+/* Docs grid */
+.docs-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(225px,1fr));gap:14px;}
+.doc-card{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:17px;display:flex;flex-direction:column;
+  transition:.2s;animation:fade .45s ease both;}
+.doc-card:hover{transform:translateY(-2px);box-shadow:var(--shadow);}
+.doc-card.done{border-color:var(--line);}
+.doc-card-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}
+.doc-ic{width:38px;height:38px;border-radius:10px;display:flex;align-items:center;justify-content:center;}
+.fam-technique{background:var(--blueprint-soft);color:var(--blueprint);}
+.fam-administratif{background:#E9E2D4;color:var(--gold);}
+.fam-financier{background:var(--green-soft);color:var(--green);}
+.doc-name{font-family:'Archivo';font-weight:700;font-size:15px;}
+.doc-full{font-size:11.5px;color:var(--ink-faint);margin-top:4px;line-height:1.4;flex:1;min-height:32px;}
+.doc-fam{font-size:9px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint);margin:11px 0 12px;}
+.doc-actions{display:flex;gap:7px;}
+.pill{display:inline-flex;align-items:center;gap:5px;font-size:9.5px;letter-spacing:.05em;padding:4px 9px;border-radius:20px;font-weight:500;text-transform:uppercase;}
+.pill.ok{background:var(--green-soft);color:var(--green);}
+.pill.gen{background:var(--accent-soft);color:var(--accent-deep);}
+.pill.idle{background:var(--surface-2);color:var(--ink-faint);}
+
+/* Modal / Wizard */
+.modal-scrim{position:fixed;inset:0;background:rgba(22,33,43,.55);backdrop-filter:blur(4px);z-index:60;display:flex;
+  align-items:flex-start;justify-content:center;padding:32px 18px;overflow:auto;}
+.modal{background:var(--surface);border-radius:20px;width:100%;max-width:680px;box-shadow:0 30px 70px -20px rgba(0,0,0,.5);
+  border:1px solid var(--line);overflow:hidden;animation:pop .3s cubic-bezier(.2,.9,.3,1.2) both;margin:auto;}
+@keyframes pop{from{opacity:0;transform:scale(.96) translateY(10px);}to{opacity:1;transform:none;}}
+.modal-head{display:flex;justify-content:space-between;align-items:flex-start;padding:24px 26px 0;}
+.modal-title{font-family:'Archivo';font-weight:800;font-size:24px;letter-spacing:-.02em;margin-top:5px;}
+.stepper{display:flex;gap:6px;padding:20px 26px 0;}
+.step{display:flex;align-items:center;gap:8px;flex:1;color:var(--ink-faint);}
+.step-dot{width:24px;height:24px;border-radius:50%;border:1.5px solid var(--line);display:flex;align-items:center;justify-content:center;
+  font-size:11px;flex:0 0 auto;background:var(--surface);transition:.2s;}
+.step.current .step-dot{border-color:var(--accent);color:var(--accent);background:var(--accent-soft);}
+.step.done .step-dot{background:var(--accent);border-color:var(--accent);color:#fff;}
+.step-label{font-size:11.5px;font-weight:500;white-space:nowrap;}
+.step.current .step-label{color:var(--ink);font-weight:600;}
+.modal-body{padding:22px 26px;min-height:280px;}
+.step-hint{font-size:13px;color:var(--ink-soft);line-height:1.55;margin:0 0 18px;}
+.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:15px;}
+.field{display:flex;flex-direction:column;gap:7px;}
+.field.full{grid-column:1/-1;}
+.field label{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-faint);}
+.field input,.field select,.tdr-area{font-family:'IBM Plex Sans';font-size:13.5px;color:var(--ink);background:var(--paper);
+  border:1px solid var(--line);border-radius:9px;padding:10px 12px;outline:none;transition:.15s;width:100%;}
+.field input:focus,.field select:focus,.tdr-area:focus{border-color:var(--accent);background:var(--surface);box-shadow:0 0 0 3px var(--accent-soft);}
+.input-cur{display:flex;align-items:center;gap:8px;background:var(--paper);border:1px solid var(--line);border-radius:9px;padding-right:12px;}
+.input-cur input{border:none;background:none;box-shadow:none!important;}
+.input-cur span{font-size:11px;color:var(--ink-faint);}
+.input-cur:focus-within{border-color:var(--accent);}
+
+/* Dropzone */
+.dropzone{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;border:1.5px dashed var(--line);
+  border-radius:14px;padding:40px;color:var(--ink-faint);cursor:pointer;transition:.2s;background:var(--paper);}
+.dropzone:hover{border-color:var(--accent);color:var(--accent);background:var(--accent-soft);}
+.dz-title{font-family:'Archivo';font-weight:700;font-size:15px;color:var(--ink);}
+.dz-sub{font-size:11px;letter-spacing:.04em;}
+.plan-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:12px;margin-top:16px;}
+.plan-card{border:1px solid var(--line);border-radius:11px;overflow:hidden;background:var(--paper);}
+.plan-card img{width:100%;height:90px;object-fit:cover;display:block;}
+.plan-card .plan-file{width:100%;height:90px;}
+.plan-card-foot{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:7px 9px;}
+.plan-card-foot .mono{font-size:9.5px;color:var(--ink-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.tdr-area{resize:vertical;line-height:1.6;}
+.tdr-file{display:inline-flex;align-items:center;gap:7px;margin-top:13px;font-size:11px;color:var(--accent);cursor:pointer;letter-spacing:.04em;}
+
+/* Doc select */
+.doc-select{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.ds-item{display:flex;align-items:center;gap:12px;background:var(--paper);border:1px solid var(--line);border-radius:11px;
+  padding:12px;cursor:pointer;transition:.15s;text-align:left;}
+.ds-item:hover{border-color:var(--ink-faint);}
+.ds-item.on{border-color:var(--accent);background:var(--accent-soft);}
+.ds-text{flex:1;min-width:0;}
+.ds-name{font-family:'Archivo';font-weight:700;font-size:13.5px;}
+.ds-full{font-size:10px;color:var(--ink-faint);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.check{width:20px;height:20px;border-radius:6px;border:1.5px solid var(--line);display:flex;align-items:center;justify-content:center;
+  color:#fff;flex:0 0 auto;transition:.15s;}
+.check.on{background:var(--accent);border-color:var(--accent);}
+.recap{display:flex;justify-content:space-between;align-items:center;margin-top:16px;padding:13px 16px;background:var(--ink);
+  color:#fff;border-radius:11px;font-size:12px;}
+.recap strong{color:var(--accent-soft);}
+.modal-foot{display:flex;justify-content:space-between;align-items:center;padding:18px 26px;border-top:1px solid var(--line);background:var(--surface-2);}
+
+/* Doc viewer */
+.doc-overlay{position:fixed;inset:0;z-index:70;background:var(--paper);display:flex;flex-direction:column;animation:fade .25s ease both;}
+.doc-bar{display:flex;align-items:center;gap:14px;padding:13px 20px;background:var(--surface);border-bottom:1px solid var(--line);}
+.doc-bar-title{display:flex;align-items:center;gap:11px;flex:1;min-width:0;color:var(--ink-soft);}
+.dbt-name{font-family:'Archivo';font-weight:700;font-size:15px;color:var(--ink);}
+.dbt-sub{font-size:10px;color:var(--ink-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:300px;}
+.src-tag{font-size:9px;letter-spacing:.08em;padding:3px 8px;border-radius:5px;text-transform:uppercase;font-weight:600;}
+.src-tag.ai{background:var(--accent-soft);color:var(--accent-deep);}
+.src-tag.template{background:var(--blueprint-soft);color:var(--blueprint);}
+.doc-bar-actions{display:flex;gap:8px;align-items:center;}
+.doc-scroll{flex:1;overflow:auto;padding:34px 20px 60px;}
+.doc-loading{display:flex;flex-direction:column;align-items:center;gap:12px;justify-content:center;height:100%;color:var(--ink-soft);}
+.doc-edit{width:100%;max-width:820px;margin:0 auto;display:block;min-height:70vh;font-family:'IBM Plex Mono';font-size:13px;line-height:1.7;
+  border:1px solid var(--line);border-radius:12px;padding:26px;background:var(--surface);color:var(--ink);outline:none;resize:none;}
+.doc-paper{max-width:820px;margin:0 auto;background:var(--surface);border:1px solid var(--line);border-radius:6px;
+  padding:60px 64px;box-shadow:0 1px 2px rgba(0,0,0,.05),0 20px 50px -25px rgba(0,0,0,.25);position:relative;}
+.doc-watermark{position:absolute;top:26px;right:30px;font-size:9px;letter-spacing:.15em;color:var(--line);}
+.doc-footer{margin-top:42px;padding-top:16px;border-top:1px solid var(--line-soft);font-size:9.5px;color:var(--ink-faint);text-align:center;letter-spacing:.05em;}
+
+/* Markdown */
+.md{color:var(--ink);font-size:14px;line-height:1.7;}
+.md-h{font-family:'Archivo';letter-spacing:-.01em;line-height:1.25;}
+.md-h1{font-size:23px;font-weight:800;margin:0 0 20px;padding-bottom:14px;border-bottom:2px solid var(--ink);}
+.md-h2{font-size:16px;font-weight:700;margin:30px 0 12px;padding-left:13px;border-left:3px solid var(--accent);color:var(--ink);}
+.md-h3{font-size:14px;font-weight:700;margin:20px 0 9px;color:var(--ink-2);}
+.md-h4{font-size:13px;font-weight:600;margin:15px 0 7px;color:var(--ink-soft);}
+.md-p{margin:0 0 13px;}
+.md-ul,.md-ol{margin:0 0 15px;padding-left:22px;}
+.md-ul li,.md-ol li{margin-bottom:7px;}
+.md-ul li::marker{color:var(--accent);}
+.md-ol li::marker{color:var(--accent);font-family:'IBM Plex Mono';font-weight:600;}
+.md-hr{border:none;border-top:1px solid var(--line);margin:22px 0;}
+.md-table-wrap{overflow-x:auto;margin:0 0 18px;border:1px solid var(--line);border-radius:8px;}
+.md-table{width:100%;border-collapse:collapse;font-size:12.5px;}
+.md-table th{background:var(--surface-2);text-align:left;padding:10px 13px;font-family:'IBM Plex Mono';font-size:10.5px;
+  letter-spacing:.04em;text-transform:uppercase;color:var(--ink-soft);border-bottom:1px solid var(--line);font-weight:500;white-space:nowrap;}
+.md-table td{padding:9px 13px;border-bottom:1px solid var(--line-soft);vertical-align:top;}
+.md-table tr:last-child td{border-bottom:none;}
+.md-table tr:nth-child(even) td{background:rgba(0,0,0,.012);}
+
+/* Toast */
+.toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%);z-index:90;display:flex;align-items:center;gap:9px;
+  background:var(--ink);color:#fff;padding:12px 20px;border-radius:12px;font-size:13px;font-weight:500;
+  box-shadow:0 14px 40px -10px rgba(0,0,0,.5);animation:toastIn .3s ease both;}
+.toast.ok{border-left:3px solid var(--green);}
+.toast.err{border-left:3px solid var(--accent);}
+@keyframes toastIn{from{opacity:0;transform:translate(-50%,16px);}to{opacity:1;transform:translate(-50%,0);}}
+
+.hide-sm{}@media(max-width:680px){.hide-sm{display:none;}}
+.hide-md{}@media(max-width:880px){.hide-md{display:none;}}
+
+/* Responsive */
+@media(max-width:980px){
+  .sidebar{position:fixed;left:0;top:0;transform:translateX(-100%);transition:transform .28s cubic-bezier(.4,0,.2,1);box-shadow:0 0 60px rgba(0,0,0,.3);}
+  .sidebar.open{transform:translateX(0);}
+  .only-mobile{display:flex;}
+  .stats{grid-template-columns:repeat(2,1fr);}
+  .proj-info{grid-template-columns:repeat(2,1fr);}
+}
+@media(max-width:640px){
+  .content{padding:22px 16px 50px;}
+  .topbar{padding:12px 16px;}
+  .page-title{font-size:26px;}
+  .hero{padding:24px 22px;}
+  .hero::before{display:none;}
+  .form-grid{grid-template-columns:1fr;}
+  .doc-select{grid-template-columns:1fr;}
+  .doc-paper{padding:32px 24px;}
+  .md-h1{font-size:20px;}
+  .proj-head-side{width:100%;}
+  .proj-head-side .btn-primary{flex:1;justify-content:center;}
+  .modal-body{min-height:auto;}
+  .stepper .step-label{display:none;}
+  .stepper .step{flex:0 0 auto;}
+}
+
+/* Print */
+@media print{
+  .no-print{display:none!important;}
+  body,.app-root,.doc-overlay,.doc-scroll{background:#fff!important;}
+  .doc-overlay{position:static!important;}
+  .doc-scroll{overflow:visible!important;padding:0!important;}
+  .doc-paper{box-shadow:none!important;border:none!important;max-width:100%!important;padding:0!important;margin:0!important;border-radius:0!important;}
+  .doc-footer{border-color:#ccc!important;}
+}
+`}</style>
+  );
+}
